@@ -106,7 +106,7 @@ try {
     Write-au2matorLog -Type Info -Text "Create Backupdir $BackupDestination"
 
     try {
-        #Ceck all Directories
+        #Check all Directories
         Write-au2matorLog -Type Info -Text "Check if BackupDirs exist"
         foreach ($Dir in $Backupdirs) {
             if ((Test-Path $Dir)) {
@@ -188,7 +188,7 @@ if ($PreCheck) {
             Get-ChildItem -Attributes !D -ErrorVariable +errItems -ErrorAction SilentlyContinue | Where-Object { $_.DirectoryName -notmatch $exclude }
             #$BackupDirFiles.Add($Backup, $Files)
 
-            $Files+= Get-ChildItem -LiteralPath $Backup  | 
+            $Files += Get-ChildItem -LiteralPath $Backup  | 
             ForEach-Object -Process { Add-Member -InputObject $_ -NotePropertyName "ParentFullName" -NotePropertyValue ($_.FullName.Substring(0, $_.FullName.LastIndexOf("\" + $_.Name))) -PassThru -ErrorAction SilentlyContinue } |
             Get-ChildItem -Attributes !D -ErrorVariable +errItems -ErrorAction SilentlyContinue
             $BackupDirFiles.Add($Backup, $Files)
@@ -268,7 +268,7 @@ else {
 
 ## ZIP
 if ($BackUpCheck) {
-    Write-au2matorLog -Type INFO -Text "BAckUpCheck is fine, so lets se if we need to ZIP"
+    Write-au2matorLog -Type INFO -Text "BackUpCheck is fine, so lets se if we need to ZIP"
     
     if ($ZIP) {
         Write-au2matorLog -Type INFO -Text "ZIP is on, so lets go"
@@ -282,7 +282,6 @@ if ($BackUpCheck) {
                     Write-au2matorLog -Type INFO -Text "7ZIP Module is installed"
                 }
                 else {
-                
                     Write-au2matorLog -Type INFO -Text "7ZIP Module is not installed, try to install"
                     Install-Module -Name 7Zip4Powershell -Force
                     Import-Module 7Zip4Powershell
@@ -304,9 +303,6 @@ if ($BackUpCheck) {
                 $ZIPCheck = $false
             }
         }
-        else {
-        
-        }
     }
     else {
         Write-au2matorLog -Type INFO -Text "No Zip, so go ahead"
@@ -315,7 +311,7 @@ if ($BackUpCheck) {
 
 }
 else {
-    Write-au2matorLog -Type ERROR -Text "BAckUpCheck failed so do not try to ZIP"
+    Write-au2matorLog -Type ERROR -Text "BackUpCheck failed so do not try to ZIP"
 }
 
 
