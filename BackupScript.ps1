@@ -63,7 +63,6 @@ $EmailSMTP = 'smtp.domain.com' #smtp server adress, DNS hostname.
 #STOP-no changes from here
 #Settings - do not change anything from here
 
-$Log = ""
 $ExcludeString = ""
 foreach ($Entry in $ExcludeDirs) {
     #Exclude the directory itself
@@ -122,20 +121,16 @@ function Write-au2matorLog {
         Write-Verbose ("Path: ""{0}"" already exists." -f $logPath)
     }
     [string]$logFile = '{0}\{1}_{2}.log' -f $logPath, $(Get-Date -Format 'yyyyMMdd'), $LogfileName
-    # Set $Log variable to be able to use it in Send-Mail
-    if ([string]::IsNullOrEmpty($Log)) {
-        Set-Variable -Name 'Log' -Value $logFile -Scope 'Script'
-    }
     $logEntry = '{0}: <{1}> <{2}> {3}' -f $(Get-Date -Format dd.MM.yyyy-HH:mm:ss), $Type, $PID, $Text
-    # Use StreamWriter instead of Add-Content to prevent errors
-    try {
-        $stream = [System.IO.StreamWriter]::new($logFile, $true)
-        $stream.WriteLine($logEntry)
-    }
-    finally {
-        $stream.Close()
+    
+    try { Add-Content -Path $logFile -Value $logEntry }
+    catch {
+        Start-sleep -Milliseconds 50
+        Add-Content -Path $logFile -Value $logEntry
     }
     if ($LoggingLevel -eq "3") { Write-Host $Text }
+    
+    
 }
 
 
@@ -148,7 +143,7 @@ Function New-Backupdir {
 
 #Delete Backupdir
 Function Remove-Backupdir {
-    $Folder = Get-ChildItem $Destination | Where-Object { $_.Attributes -eq "Directory" } | Sort-Object -Property CreationTime -Descending:$false | Select-Object -First 1
+    $Folder = Get-ChildItem $Destination | where { $_.Attributes -eq "Directory" } | Sort-Object -Property CreationTime -Descending:$false | Select-Object -First 1
 
     Write-au2matorLog -Type Info -Text "Remove Dir: $Folder"
     
@@ -158,7 +153,7 @@ Function Remove-Backupdir {
 
 #Delete Zip
 Function Remove-Zip {
-    $Zip = Get-ChildItem $Destination | Where-Object { $_.Attributes -eq "Archive" -and $_.Extension -eq ".zip" } | Sort-Object -Property CreationTime -Descending:$false | Select-Object -First 1
+    $Zip = Get-ChildItem $Destination | where { $_.Attributes -eq "Archive" -and $_.Extension -eq ".zip" } | Sort-Object -Property CreationTime -Descending:$false | Select-Object -First 1
 
     Write-au2matorLog -Type Info -Text "Remove Zip: $Zip"
     
@@ -166,7 +161,7 @@ Function Remove-Zip {
 }
 
 #Check if Backupdirs and Destination is available
-function Test-Dir {
+function Check-Dir {
     Write-au2matorLog -Type Info -Text "Check if BackupDir and Destination exists"
     if (!(Test-Path $BackupDirs)) {
         return $false
@@ -179,35 +174,33 @@ function Test-Dir {
 }
 
 #Save all the Files
-Function New-Backup {
+Function Make-Backup {
     Write-au2matorLog -Type Info -Text "Started the Backup"
     $BackupDirFiles = @{ } #Hash of BackupDir & Files
     $Files = @()
     $SumMB = 0
     $SumItems = 0
-    $SumCounter = 1
+    $SumCount = 0
     $colItems = 0
-    $StopWatch = [System.Diagnostics.Stopwatch]::StartNew()
     Write-au2matorLog -Type Info -Text "Count all files and create the Top Level Directories"
 
     foreach ($Backup in $BackupDirs) {
         # Get recursive list of files for each Backup Dir once and save in $BackupDirFiles to use later.
+        # Optimize performance by getting included folders first, and then only recursing files for those.
         # Use -LiteralPath option to work around known issue with PowerShell FileSystemProvider wildcards.
         # See: https://github.com/PowerShell/PowerShell/issues/6733
 
-        $Files = Get-ChildItem -LiteralPath $Backup -Recurse -Attributes !D+!H+!S+!ReparsePoint -ErrorVariable +errItems -ErrorAction SilentlyContinue | Where-Object { $_.DirectoryName -notmatch $exclude }
+        $Files = Get-ChildItem -LiteralPath $Backup -recurse -Attributes D+!ReparsePoint, D+H+!ReparsePoint -ErrorVariable +errItems -ErrorAction SilentlyContinue | 
+        ForEach-Object -Process { Add-Member -InputObject $_ -NotePropertyName "ParentFullName" -NotePropertyValue ($_.FullName.Substring(0, $_.FullName.LastIndexOf("\" + $_.Name))) -PassThru -ErrorAction SilentlyContinue } |
+        Where-Object { $_.FullName -notmatch $exclude -and $_.ParentFullName -notmatch $exclude } |
+        Get-ChildItem -Attributes !D -ErrorVariable +errItems -ErrorAction SilentlyContinue | Where-Object { $_.DirectoryName -notmatch $exclude }
         $BackupDirFiles.Add($Backup, $Files)
 
-        # To prevent unnecessary error output
-        if ($null -ne $Files) {
-            $colItems = ($Files | Measure-Object -property length -sum) 
-            $Items = 0
-            $SumMB += $colItems.Sum.ToString()
-            $SumItems += $colItems.Count
-        } else {
-            Write-au2matorLog -Type Info -Text "No files found in $Backup"
-        }
+        $colItems = ($Files | Measure-Object -property length -sum) 
+        $Items = 0
         Copy-Item -LiteralPath $Backup -Destination $Backupdir -Force -ErrorAction SilentlyContinue | Where-Object { $_.FullName -notmatch $exclude }
+        $SumMB += $colItems.Sum.ToString()
+        $SumItems += $colItems.Count
     }
 
     $TotalMB = "{0:N2}" -f ($SumMB / 1MB) + " MB of Files"
@@ -239,23 +232,17 @@ Function New-Backup {
                 Write-au2matorLog -Type Error -Text $("'" + $File.FullName + "' returned an error and was not copied")
             }
             $Items += (Get-item -LiteralPath $file.fullname).Length
+            $status = "Copy file {0} of {1} and copied {3} MB of {4} MB: {2}" -f $count, $SumItems, $file.Name, ("{0:N2}" -f ($Items / 1MB)).ToString(), ("{0:N2}" -f ($SumMB / 1MB)).ToString()
             $Index = [array]::IndexOf($BackupDirs, $Backup) + 1
-            if ($StopWatch.Elapsed.TotalMilliseconds -ge 500) {
-                # Create the Write-Progress output - because the Write-Progress bar closes after it is completed there is no need to update the strings in real time
-                $Status = "Copy file {0} of {1} and copied {3} MB of {4} MB: {2}" -f $SumCounter, $SumItems, $file.Name, ("{0:N2}" -f ($Items / 1MB)).ToString(), ("{0:N2}" -f ($SumMB / 1MB)).ToString()
-                $Activity = "Copy data Location {0} of {1}" -f $Index , $BackupDirs.Count
-                Write-Progress -Activity $Activity -Status $Status -PercentComplete ($Items / $SumMB * 100)
-                $StopWatch.Reset()
-                $StopWatch.Start()
-            }
-            if ($File.Attributes -ne "Directory" -and $SumCounter -ne $SumItems) { $SumCounter++ } # $SumCounter would be set in the last iteration again which is not needed
+            $Text = "Copy data Location {0} of {1}" -f $Index , $BackupDirs.Count
+            Write-Progress -Activity $Text $status -PercentComplete ($Items / $SumMB * 100)  
+            if ($File.Attributes -ne "Directory") { $count++ }
         }
     }
-    $StopWatch.Reset() # Stop Stopwatch
-    Write-Progress -Activity $Activity -Status $Status -Completed
+    $SumCount += $Count
     $SumTotalMB = "{0:N2}" -f ($Items / 1MB) + " MB of Files"
     Write-au2matorLog -Type Info -Text "----------------------"
-    Write-au2matorLog -Type Info -Text "Copied $SumCounter files with $SumTotalMB"
+    Write-au2matorLog -Type Info -Text "Copied $SumCount files with $SumTotalMB"
     Write-au2matorLog -Type Info -Text "$ErrorCount Files could not be copied"
 
 
@@ -264,8 +251,8 @@ Function New-Backup {
         $EmailSubject = "Backup Email $(get-date -format MM.yyyy)"
         $EmailBody = "Backup Script $(get-date -format MM.yyyy) (last Month).`nYours sincerely `Matthew - SYSTEM ADMINISTRATOR"
         Write-au2matorLog -Type Info -Text "Sending e-mail to $EmailTo from $EmailFrom (SMTPServer = $EmailSMTP) "
-        # The attachment is $log 
-        Send-MailMessage -To $EmailTo -From $EmailFrom -Subject $EmailSubject -Body $EmailBody -SmtpServer $EmailSMTP -Attachments $Log
+        ### the attachment is $log 
+        Send-MailMessage -To $EmailTo -From $EmailFrom -Subject $EmailSubject -Body $EmailBody -SmtpServer $EmailSMTP -attachment $Log 
     }
 }
 
@@ -276,30 +263,32 @@ Write-au2matorLog -Type Info -Text "----------------------"
 Write-au2matorLog -Type Info -Text "Start the Script"
 
 #Check if Backupdir needs to be cleaned and create Backupdir
-$Count = (Get-ChildItem $Destination | Where-Object { $_.Attributes -eq "Directory" }).count
+$Count = (Get-ChildItem $Destination | where { $_.Attributes -eq "Directory" }).count
 Write-au2matorLog -Type Info -Text "Check if there are more than $Versions Directories in the Backupdir"
 
-if ($Count -gt $Versions) {
-    Write-au2matorLog -Type Info -Text "Found $Count Backups"
+if ($count -gt $Versions) {
+    Write-au2matorLog -Type Info -Text "Found $count Backups"
     Remove-Backupdir
 }
 
 
-$CountZip = (Get-ChildItem $Destination | Where-Object { $_.Attributes -eq "Archive" -and $_.Extension -eq ".zip" }).count
+$CountZip = (Get-ChildItem $Destination | where { $_.Attributes -eq "Archive" -and $_.Extension -eq ".zip" }).count
 Write-au2matorLog -Type Info -Text "Check if there are more than $Versions Zip in the Backupdir"
 
-if ($CountZip -ge $Versions) { # -ge because script creates a new Backupdir before it checks how many are still left so it is always $Versions - 1 for dirs but not archives
+if ($CountZip -gt $Versions) {
+
     Remove-Zip 
+
 }
 
 #Check if all Dir are existing and do the Backup
-$CheckDir = Test-Dir
+$CheckDir = Check-Dir
 
 if ($CheckDir -eq $false) {
     Write-au2matorLog -Type Error -Text "One of the Directories are not available, Script has stopped"
 }
 else {
-    New-Backup
+    Make-Backup
 
     $Enddate = Get-Date #-format dd.MM.yyyy-HH:mm:ss
     $span = $EndDate - $StartDate
@@ -320,8 +309,8 @@ else {
                     
             if ($UseStaging -and $Zip) {
                 $Zip = $Staging + ("\" + $Backupdir.Replace($Staging, '').Replace('\', '') + ".zip")
-                sz a -t7z -mx9 $Zip $Backupdir # -mx9 = ultra compression / -mx7 = maximum compress / -mx3 = fast compress
-
+                sz a -t7z $Zip $Backupdir
+                
                 Write-au2matorLog -Type Info -Text "Move Zip to Destination"
                 Move-Item -Path $Zip -Destination $Destination
 
@@ -332,7 +321,7 @@ else {
 
             }
             else {
-                sz a -t7z -mx9 ($Destination + ("\" + $Backupdir.Replace($Destination, '').Replace('\', '') + ".zip")) $Backupdir # -mx9 = ultra compression / -mx7 = maximum compress / -mx3 = fast compress
+                sz a -t7z ($Destination + ("\" + $Backupdir.Replace($Destination, '').Replace('\', '') + ".zip")) $Backupdir
             }
                 
         }
